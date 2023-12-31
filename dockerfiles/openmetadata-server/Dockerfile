@@ -1,0 +1,3 @@
+FROM openmetadata/server:latest
+
+

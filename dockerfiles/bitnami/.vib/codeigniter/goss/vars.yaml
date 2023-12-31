@@ -1,0 +1,12 @@
+binaries:
+  - composer
+  - php-fpm
+  - mysql
+directories:
+  - mode: "0775"
+    paths:
+      - /app
+root_dir: /opt/bitnami
+version:
+  bin_name: /opt/bitnami/codeigniter/spark
+  flag: --version
