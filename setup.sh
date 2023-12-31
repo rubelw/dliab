@@ -522,10 +522,17 @@ else
 fi
 
 
-
+######################################
 ######################################
 # Build dockerfiles
 #####################################
+######################################
+
+
+######################################
+# Build opensearch image
+#####################################
+print_with_header "Build opensearch image"
 
 # Set the name of the ECR repository to check
 ecr_repository_name="dliab-opensearch"
@@ -583,8 +590,10 @@ EOF
 fi
 
 
-
-
+######################################
+# Build openldap image
+#####################################
+print_with_header "Build openldap image"
 
 ecr_repository_name="dliab-openldap"
 
@@ -628,6 +637,10 @@ fi
 cd "${CURRENT_DIR}"
 
 
+######################################
+# Build postgres image
+#####################################
+print_with_header "Build postgres image"
 
 
 # Set the name of the ECR repository to check
@@ -685,8 +698,10 @@ EOF
 
 fi
 
-
-
+######################################
+# Build redis-exporter image
+#####################################
+print_with_header "Build redis-exporter image"
 
 
 # Set the name of the ECR repository to check
@@ -745,10 +760,10 @@ EOF
 fi
 
 
-
-
-
-
+######################################
+# Build redis-sentinel image
+#####################################
+print_with_header "Build redis-sentinel image"
 
 # Set the name of the ECR repository to check
 ecr_repository_name="dliab-redis-sentinel"
@@ -806,8 +821,10 @@ EOF
 fi
 
 
-
-
+######################################
+# Build redis image
+#####################################
+print_with_header "Build redis image"
 
 # Set the name of the ECR repository to check
 ecr_repository_name="dliab-redis"
@@ -864,12 +881,10 @@ EOF
 
 fi
 
-
-
-
-
-
-
+######################################
+# Build airflow image
+#####################################
+print_with_header "Build airflow image"
 
 
 # Set the name of the ECR repository to check
@@ -927,8 +942,10 @@ EOF
 
 fi
 
-
-
+######################################
+# Build openssl image
+#####################################
+print_with_header "Build openssl image"
 
 ecr_repository_name="dliab-openssl"
 
@@ -986,6 +1003,10 @@ fi
 cd "${CURRENT_DIR}"
 
 
+######################################
+# Build busybox image
+#####################################
+print_with_header "Build busybox image"
 
 
 # Set the name of the ECR repository to check
@@ -1036,7 +1057,7 @@ EOF
 
     aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
 
-    echo "Docker image "409396177599.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
     cd "dockerfiles/busybox" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
 
     # Push Docker image to ECR
@@ -1046,9 +1067,10 @@ fi
 cd "${CURRENT_DIR}"
 
 
-
-
-
+######################################
+# Build self-service-password image
+#####################################
+print_with_header "Build self-service-password image"
 
 # Set the name of the ECR repository to check
 
@@ -1098,7 +1120,7 @@ EOF
 
     aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
 
-    echo "Docker image "409396177599.dkr.ecr.us-east-1.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
     cd "dockerfiles/self-service-password" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
 
     # Push Docker image to ECR
@@ -1107,11 +1129,10 @@ fi
 
 cd "${CURRENT_DIR}"
 
-
-
-
-
-
+######################################
+# Build phpldapadmin image
+#####################################
+print_with_header "Build phpldapadmin image"
 
 # Set the name of the ECR repository to check
 
@@ -1161,7 +1182,7 @@ EOF
 
     aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
 
-    echo "Docker image "409396177599.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
     cd "dockerfiles/phpldapadmin" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
 
     # Push Docker image to ECR
@@ -1170,8 +1191,10 @@ fi
 
 cd "${CURRENT_DIR}"
 
-
-
+######################################
+# Build openmetadata-server image
+#####################################
+print_with_header "Build openmetadata-server image"
 
 ecr_repository_name="dliab-openmetadata-server"
 
@@ -1219,7 +1242,7 @@ EOF
 
     aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
 
-    echo "Docker image "409396177599.dkr.ecr.us-east-1.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
     cd "dockerfiles/openmetadata-server" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
 
     # Push Docker image to ECR
@@ -1228,15 +1251,20 @@ fi
 
 cd "${CURRENT_DIR}"
 
+######################################
+# Done building docker images
+#####################################
+print_with_header "Done building docker images"
 
 ################################################
+################################################
 #  Create EKS Cluster
+################################################
 ################################################
 print_with_header "# Create AWS EKS cluster"
 # Get a list of AWS EKS clusters
 clusters=$(aws eks list-clusters --query 'clusters' --output json | jq -r '.| map(.) | .[]')
 IFS=$'\n' read -d '' -ra cluster_list <<< "$clusters"
-
 
 # Target name to check
 target_name="${CLUSTER_NAME}"
@@ -1257,8 +1285,6 @@ if [ "$name_found" == true ]; then
   echo "$target_name is in the array."
 else
   echo "$target_name is not in the array."
-
-
 
   # AWS EKS Cluster Configuration
   region="${AWS_DEFAULT_REGION}"
@@ -1287,12 +1313,8 @@ else
 
   aws eks update-kubeconfig --region "${AWS_DEFAULT_REGION}" --name "${CLUSTER_NAME}"
 
-
-
-
   # approve persistent volumes
   eksctl utils associate-iam-oidc-provider --region="${AWS_DEFAULT_REGION}" --cluster="${CLUSTER_NAME}" --approve
-
 
   # Create EBS Driver
   eksctl create iamserviceaccount \
@@ -1312,8 +1334,6 @@ else
   eksctl create addon --cluster "${CLUSTER_NAME}" --region "${AWS_DEFAULT_REGION}" --name eks-pod-identity-agent
 
   # Add efs addon
-
-
   role_name=AmazonEKS_EFS_CSI_DriverRole
 
   eksctl create iamserviceaccount \
@@ -1325,7 +1345,6 @@ else
     --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy \
     --approve
 
-
   TRUST_POLICY=$(aws iam get-role --role-name $role_name --query 'Role.AssumeRolePolicyDocument' | \
     sed -e 's/efs-csi-controller-sa/efs-csi-*/' -e 's/StringEquals/StringLike/')
 
@@ -1335,19 +1354,18 @@ else
 
   aws iam create-policy --policy-name=eks-admin-policy --policy-document='{"Version": "2012-10-17", "Statement": {"Sid": "AdminPrivs", "Effect": "Allow", "Action": ["eks:*" ], "Resource": "*" }}'
 
-  # Delete cluster
-  #eksctl delete cluster --name my-eks-cluster
-
-  echo "#############################"
-  echo " Update config map"
-  echo "#############################"
+  echo "#################################"
+  echo " Update config map to allow root"
+  echo "#################################"
   python scripts/modify_configmap.py "${AWS_ACCOUNT_ID}"
-
 
 fi
 
-
-
+#########################################
+#########################################
+# Install all helm charts
+#########################################
+#########################################
 
 print_with_header "# Check if charts installed"
 
@@ -1361,7 +1379,6 @@ helm_data=${helm_data//\]}
 helm_data=${helm_data//\"}
 helm_data=${helm_data//,/ }
 
-
 echo "helm_data: ${helm_data}"
 # Print the array elements
 IFS=' ' read -r -a helm_array <<< "$helm_data"
@@ -1371,14 +1388,11 @@ echo "Helm releases: ${helm_array[@]}"
 # Iterate over each item in the array
 for item in "${helm_array[@]}"; do
     echo "Processing item: $item"
-
-
 done
 
 #############################
 # Install secrets
 ##############################
-
 
 # Target name to check
 target_name="dliab-secrets-chart"
@@ -1403,12 +1417,9 @@ else
   --values charts/dliab-secrets/values.yaml
 fi
 
-
-
 ###############################
 # Install Openldap chart
 ###############################
-
 
 # Target name to check
 target_name="openldap-chart"
@@ -1475,11 +1486,9 @@ else
 
 fi
 
-
 #############################
 # Install postgres database
 #############################
-
 
 # Target name to check
 target_name="postgres-chart"
@@ -1556,17 +1565,14 @@ else
   kubectl port-forward service/postgres-chart-postgresql 5432:5432 &
   sleep 3
   POSTGRES_ADMIN_PASSWORD=$(kubectl get secret --namespace default postgres-chart-postgresql -o jsonpath="{.data.postgres-password}" | base64 -d)
-  PGPASSWORD="$POSTGRES_ADMIN_PASSWORD" psql --host 127.0.0.1 -U postgres -d postgres -p 5432 -a -f "${CURRENT_DIR}/scripts/postgres_setup.sql
+  PGPASSWORD="$POSTGRES_ADMIN_PASSWORD" psql --host 127.0.0.1 -U postgres -d postgres -p 5432 -a -f "${CURRENT_DIR}/scripts/postgres_setup.sql"
   echo "Done configuring airflow database"
 
-
 fi
-
 
 ########################
 # Install Redis chart
 ########################
-
 
 
 # Target name to check
@@ -1629,14 +1635,11 @@ else
   #    kubectl port-forward --namespace default svc/redis-chart-master 6379:6379 &
   #    REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -h 127.0.0.1 -p 6379
 
-
 fi
-
 
 ################################
 # Install airflow chart
 ################################
-
 
 # Target name to check
 target_name="airflow-chart"
@@ -1656,14 +1659,6 @@ done
 if [ "$name_found" == true ]; then
   echo "$target_name is in the array."
 else
-
-
-  # create database airflow_db;
-  # create user airflow_user with password 'airflow_pass';
-  # grant all privileges on database airflow_db to airflow_user;
-  # grant all on schema public to airflow_user;
-  # ALTER DATABASE airflow_db OWNER TO airflow_user;
-
 
   echo "$target_name is not in the array."
   helm dependencies build charts/airflow/charts/airflow
@@ -1792,15 +1787,11 @@ else
   --values charts/openmetadata/charts/deps/charts/opensearch/values.yaml \
   --values charts/openmetadata/charts/deps/values.yaml
 
-
 fi
-
 
 ###################################
 # Install OpenMetadata
 ###################################
-
-
 
 # Target name to check
 target_name="openmetadata"
@@ -1861,20 +1852,6 @@ EOF
   --values charts/openmetadata/charts/openmetadata/values.yaml \
   --values charts/openmetadata/charts/openmetadata/extra-values.yaml
 
-  #--set-string openmetadata.config.authentication.ldapConfiguration.dnAdminPrincipal=cn=admin,dc=sirius,dc=com \
-  #--set openmetadata.config.authentication.ldapConfiguration.userBaseDN="ou=users,dc=sirius,dc=com" \
-  #--set openmetadata.config.authentication.ldapConfiguration.mailAttributeName="mail" \
-  #--set openmetadata.config.authorizer.principalDomain="sirius.com" \
-  #--set openmetadata.config.authentication.enableSelfSignup=false \
-  #--set openmetadata.config.authentication.provider="ldap" \
-  #--set openmetadata.config.authentication.ldapConfiguration.host=openldap-chart.default.svc.cluster.local \
-  #--set openmetadata.config.authentication.ldapConfiguration.port=389 \
-
-
-
-
-
-
 fi
 
 ################################
@@ -1905,8 +1882,6 @@ else
   --set image.repository="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/openlake-trino" \
   --set image.tag=latest \
   --values charts/trino/charts/trino/values.yaml
-
-
 
 fi
 
