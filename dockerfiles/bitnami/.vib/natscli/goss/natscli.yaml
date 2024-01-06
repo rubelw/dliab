@@ -1,8 +1,0 @@
-# Copyright VMware, Inc.
-# SPDX-License-Identifier: APACHE-2.0
-
-user:
-  natscli:
-    exists: true
-    uid: 1001
-    gid: 0

@@ -1,7 +1,0 @@
-auth:
-  password: ComplicatedPassword123!4
-loadExamples: true
-service:
-  ports:
-    http: 80
-  type: LoadBalancer

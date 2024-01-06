@@ -1,3 +1,9 @@
 ./venv
 venv/
 venv/*
+charts/
+charts/*
+dockerfiles/
+dockerfiles/*
+plugins/
+plugins/*

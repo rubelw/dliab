@@ -1,2 +1,0 @@
-FROM "bitnami/opensearch:latest"
-

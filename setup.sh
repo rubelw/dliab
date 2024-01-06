@@ -9,6 +9,9 @@ EKS_VERSION="1.28"
 CLUSTER_NAME="dliab-eks-cluster"
 JDK_DOWNLOAD_LINK="https://corretto.aws/downloads/latest/amazon-corretto-21-x64-linux-jdk.tar.gz"
 JDK_VERSION=21
+PUBLIC_KEY_FILE="${HOME}/.ssh/dliab.pub"
+KEY_NAME="dliab"
+
 
 while getopts ":d" opt; do
   case $opt in
@@ -118,16 +121,13 @@ prompt_user() {
 
     case "$user_input" in
         [yY]|[yY][eE][sS])
-            echo "User entered 'yes'."
-            return 0
+            echo 0
             ;;
         [nN]|[nN][oO])
-            echo "User entered 'no'."
-            return 1
+            echo 1
             ;;
         *)
-            echo "Invalid input. Please enter 'yes' or 'no'."
-            return 2
+            echo 2
             ;;
     esac
 }
@@ -168,11 +168,11 @@ get_latest_maven_version() {
 print_with_header "Create ca.crt"
 
 if [ ! -e "ca.crt" ]; then
-  # Generate a CA key
+  echo "Generate a CA key"
   openssl genpkey -algorithm RSA -out ca.key
-  # Generate a CA certificate signing request
+  echo "Generate a CA certificate signing request"
   openssl req -new -key ca.key -out ca.csr -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=sirius.com"
-  # Self sign the certificate
+  echo "Self sign the certificate"
   openssl x509 -req -days 365 -in ca.csr -signkey ca.key -out ca.crt
 
   echo "CA Certificate and key generated"
@@ -181,15 +181,31 @@ else
   echo "CA Certificate and key already generated"
 fi
 
+
 #########################
 # Create ssh key
 ################
 
-if [ ! -e "${HOME}/.ssh/dliab" ]; then
-  ssh-keygen -t rsa -b 2048 -f "${HOME}/.ssh/dliab" -N ""
-  aws ec2 import-key-pair --key-name dliab --public-key-material "$(cat $HOME/.ssh/dliab.pub)"
+# Specify the file path
+file_path="${HOME}/.ssh/dliab"
+
+# Check if the file exists
+if [ -e "$file_path" ]; then
+  echo "# dliab ssh key already exists"
+else
+  echo "ssh key for dliab does not exists and should"
+  ssh-keygen -t rsa -b 2048 -f "${HOME}/.ssh/dliab" -q -N ""
+  echo "key created - uploading to AWS"
+  public_key_material=$(cat "$PUBLIC_KEY_FILE")
+
+  # Import the key pair
+  print_with_header "If upload fails because of base64 padding - upload dliab.pub keypair manually and rerun"
+  aws ec2 import-key-pair --key-name "$KEY_NAME" --public-key-material "$public_key_material"
 
 fi
+
+
+
 
 # Check if Maven is installed
 if command -v mvn &>/dev/null; then
@@ -213,6 +229,7 @@ else
     sudo yum install -y maven  # Use 'sudo apt-get install -y maven' for Ubuntu/Debian
     echo "Maven has been installed."
 fi
+
 
 
 print_with_header "Setup Maven build variables"
@@ -261,7 +278,6 @@ if [ ! -d "$VENV_DIR" ]; then
     echo "Creating virtual environment..."
 
     return_value=$(prompt_user "Pythong virtualenv is not installed, are you cool with installing virtualenv")
-
     if [ "$return_value" -eq 0 ]; then
 
       # Create the virtual environment using Python 3.9
@@ -502,13 +518,46 @@ else
     fi
 fi
 
-
 print_with_header "Setup config directory"
 if [ ! -d "${CURRENT_DIR}/configs" ]; then
   mkdir -p "${CURRENT_DIR}/configs"
   cd "${CURRENT_DIR}"
 else
   echo "Directory configs already exists. Skipping git clone.- ${LINENO}"
+fi
+
+
+
+
+##########################################
+# Download all the needed plugins
+##########################################
+
+##################################
+# Get ldap group provider plugin
+##################################
+# mvn --version
+#Apache Maven 3.8.7 (b89d5959fcde851dcb1c8946a785a163f14e1e29)
+#Maven home: /usr/local/Cellar/maven/3.8.7/libexec
+#Java version: 21.0.1, vendor: Homebrew, runtime: /usr/local/Cellar/openjdk/21.0.1/libexec/openjdk.jdk/Contents/Home
+#Default locale: en_US, platform encoding: UTF-8
+#OS name: "mac os x", version: "14.2.1", arch: "x86_64", family: "mac"
+
+print_with_header "Install trino group provider"
+directory="group-provider"
+
+if [ ! -d "${CURRENT_DIR}/plugins/${directory}" ]; then
+  mkdir -p "${CURRENT_DIR}/plugins/${directory}"
+  git clone https://github.com/arghya18/trino-group-provider-ldap-ad.git "${CURRENT_DIR}/plugins/${directory}"
+  cd "${CURRENT_DIR}/plugins/${directory}"
+  mv .git .git.bak
+
+  print_with_header "If mvn build fails, cd to ${CURRENT_DIR}/plugins/group-provider and try running 'mvn clean package' and see what is wrong with you mvn installation - then rerun setup after build completes"
+  mvn clean package
+
+  cd "${CURRENT_DIR}"
+else
+  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
 fi
 
 
@@ -569,15 +618,6 @@ coordinator:
           ldap.user-bind-pattern=${USER}@sirius.com
           ldap.user-base-dn=ou=users,dc=sirius,dc=com
           ldap.group-auth-pattern=(&(objectClass=user)(sAMAccountName=${USER})(|memberOf=CN=admin)))
-  initContainers:
-  - name: install-plugin
-    image: alpine:3.14
-    command: ["sh"]
-    args:
-    - -c
-    - |
-      mkdir -p /usr/lib/starburst/plugin/ldap-ad && cd /usr/lib/starburst/plugin/ldap-ad && wget https://github.com/arghya18/trino-group-provider-ldap-ad/releases/download/v1.0/trino-group-provider-ldap-ad-1.0.zip && unzip trino-group-provider-ldap-ad-1.0.zip && rm trino-group-provider-ldap-ad-1.0.zip
-
 EOF
 
 
@@ -611,7 +651,7 @@ if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
   mkdir -p "${CURRENT_DIR}/charts/${directory}"
   git clone https://github.com/MustafaMirza45/Apache-ranger-kubernetes.git "${CURRENT_DIR}/charts/${directory}"
   cd "${CURRENT_DIR}/charts/${directory}"
-  rm -rf .git
+  mv .git .git.bak
 
 
   cd "${CURRENT_DIR}"
@@ -627,7 +667,7 @@ if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
   mkdir -p "${CURRENT_DIR}/charts/${directory}"
   git clone https://github.com/airflow-helm/charts.git "${CURRENT_DIR}/charts/${directory}"
   cd "${CURRENT_DIR}/charts/${directory}"
-  rm -rf .git
+  mv .git .git.bak
   cd "${CURRENT_DIR}"
 else
   echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
@@ -641,7 +681,7 @@ if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
   mkdir -p "${CURRENT_DIR}/charts/${directory}"
   git clone https://github.com/trinodb/charts.git "${CURRENT_DIR}/charts/${directory}"
   cd "${CURRENT_DIR}/charts/${directory}"
-  rm -rf .git
+  mv .git .git.bak
   cd "${CURRENT_DIR}"
 else
   echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
@@ -655,7 +695,7 @@ if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
   mkdir -p "${CURRENT_DIR}/charts/${directory}"
   git clone https://github.com/apache/superset.git "${CURRENT_DIR}/charts/${directory}"
   cd "${CURRENT_DIR}/charts/${directory}"
-  rm -rf .git
+  mv .git .git.bak
   cd "${CURRENT_DIR}"
 else
   echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
@@ -670,7 +710,7 @@ if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
   mkdir -p "${CURRENT_DIR}/charts/${directory}"
   git clone https://github.com/jp-gouin/helm-openldap.git  "${CURRENT_DIR}/charts/${directory}"
   cd "${CURRENT_DIR}/charts/${directory}"
-  rm -rf .git
+  mv .git .git.bak
   cd "${CURRENT_DIR}"
 else
   echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
@@ -685,7 +725,7 @@ if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
   mkdir -p "${CURRENT_DIR}/charts/${directory}"
   git clone https://github.com/bitnami/charts.git "${CURRENT_DIR}/charts/${directory}"
   cd "${CURRENT_DIR}/charts/${directory}"
-  rm -rf .git
+  mv .git .git.bak
   cd "${CURRENT_DIR}"
 else
   echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
@@ -699,12 +739,11 @@ if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
   mkdir -p "${CURRENT_DIR}/charts/${directory}"
   git clone https://github.com/open-metadata/openmetadata-helm-charts.git "${CURRENT_DIR}/charts/${directory}"
   cd "${CURRENT_DIR}/charts/${directory}"
-  rm -rf .git
+  mv .git .git.bak
   cd "${CURRENT_DIR}"
 else
   echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
 fi
-
 
 # Specify the folder containing the .tgz files
 folder="${CURRENT_DIR}/charts/${directory}/charts/deps/charts"
@@ -776,37 +815,6 @@ fi
 ####################################
 
 
-print_with_header "Clone ranger containers"
-directory="ranger"
-
-if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
-  echo "${directory} does not exist"
-  mkdir -p "${CURRENT_DIR}/dockerfiles/${directory}"
-  git clone https://github.com/apache/ranger.git "${CURRENT_DIR}/dockerfiles/${directory}"
-  cd "dockerfiles/${directory}"
-  rm -rf .git
-  cd "${CURRENT_DIR}"
-else
-  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
-fi
-
-
-
-print_with_header "Clone trino containers"
-directory="trino"
-
-if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
-  echo "${directory} does not exist"
-  mkdir -p "${CURRENT_DIR}/dockerfiles/${directory}"
-  git clone https://github.com/trinodb/trino.git "${CURRENT_DIR}/dockerfiles/${directory}"
-  cd "dockerfiles/${directory}"
-  rm -rf .git
-  cd "${CURRENT_DIR}"
-else
-  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
-fi
-
-
 print_with_header "Clone binami containers"
 directory="bitnami"
 
@@ -815,7 +823,7 @@ if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
   mkdir -p "${CURRENT_DIR}/dockerfiles/${directory}"
   git clone https://github.com/bitnami/containers.git "${CURRENT_DIR}/dockerfiles/${directory}"
   cd "dockerfiles/${directory}"
-  rm -rf .git
+  mv .git .git.bak
   cd "${CURRENT_DIR}"
 else
   echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
@@ -830,26 +838,12 @@ if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
   mkdir -p "${CURRENT_DIR}/dockerfiles/${directory}"
   git clone https://github.com/samisalkosuo/openldap-docker.git "${CURRENT_DIR}/dockerfiles/${directory}"
   cd "dockerfiles/${directory}"
-  rm -rf .git
+  mv .git .git.bak
   cd "${CURRENT_DIR}"
 else
   echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
 fi
 
-
-print_with_header "Clone ranger-admin dockerfiles"
-directory="ranger-admin"
-
-if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
-  echo "${directory} does not exist"
-  mkdir -p "${CURRENT_DIR}/dockerfiles/${directory}"
-  git clone https://github.com/aakashnand.trino-ranger-demo.git" ${CURRENT_DIR}/dockerfiles/${directory}"
-  cd "dockerfiles/${directory}"
-  rm -rf .git
-  cd "${CURRENT_DIR}"
-else
-  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
-fi
 
 
 
@@ -859,170 +853,6 @@ fi
 #####################################
 ######################################
 
-######################################
-# Build ranger-base image
-#####################################
-print_with_header "Build ranger-base image"
-
-# Set the name of the ECR repository to check
-ecr_repository_name="dliab-ranger-base"
-
-# Check if the ECR repository exists
-if aws ecr describe-repositories --repository-names "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}" &> /dev/null; then
-    echo "ECR repository '$ecr_repository_name' exists in region '${AWS_DEFAULT_REGION}'."
-else
-    echo "ECR repository '$ecr_repository_name' does not exist in region '${AWS_DEFAULT_REGION}'."
-    # Create the ECR repository
-    aws ecr create-repository --repository-name "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}"
-    aws ecr create-repository --repository-name "dliab-ranger-base" --region "${AWS_DEFAULT_REGION}"
-    aws ecr create-repository --repository-name "dliab-ranger-usersync" --region "${AWS_DEFAULT_REGION}"
-    aws ecr create-repository --repository-name "dliab-ranger-postgres" --region "${AWS_DEFAULT_REGION}"
-    aws ecr create-repository --repository-name "dliab-ranger-solr" --region "${AWS_DEFAULT_REGION}"
-    aws ecr create-repository --repository-name "dliab-ranger-zk" --region "${AWS_DEFAULT_REGION}"
-
-
-    # Output success message
-    echo "ECR repository '$ecr_repository_name' created in region '${AWS_DEFAULT_REGION}'."
-fi
-cd "${CURRENT_DIR}"
-
-# Check if Docker image with the specified tag exists
-if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
-    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" exists locally."
-else
-
-    print_with_header "Building ranger images"
-    echo "This will take about an hour"
-
-    cd "dockerfiles/ranger" && ./ranger_in_docker  up && ./ranger_in_docker down
-
-
-    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
-
-    docker tag ranger-base:latest "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-base:latest" && cd "${CURRENT_DIR}"
-    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-base:latest"
-
-    docker tag ranger-base:latest "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-postgres:latest" && cd "${CURRENT_DIR}"
-    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-postgres:latest"
-
-fi
-
-print_with_header "Check if dliab-ranger-admin Docker image with the specified tag exists"
-if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin" | grep -q "latest"; then
-    echo "Docker image \"dliab-ranger-admin:latest\" exists locally."
-else
-
-  directory="${CURRENT_DIR}/charts/ranger/ranger-admin"
-
-  if [ -d "$directory" ]; then
-      echo "Directory exists."
-  else
-      echo "Directory does not exist."
-      mkdir -p $directory
-  fi
-
-  filename="${CURRENT_DIR}/charts/ranger/ranger-admin/Dockerfile"
-
-
-        cat > "$filename" <<EOF
-ARG RANGER_VERSION=3.0.0
-ARG RANGER_DB_TYPE=POSTGRES
-ARG TARGETARCH=amd64
-ARG RANGER_ADMIN_JAVA_VERSION=8
-
-FROM ranger:latest
-
-USER root
-
-RUN cp /usr/share/java/postgresql.jar /root/postgresql.jar
-RUN ls -latr
-
-
-USER ranger
-
-COPY install.properties /home/ranger/admin
-COPY install.properties /opt/ranger/admin
-
-
-
-
-ENTRYPOINT [ "/home/ranger/scripts/ranger.sh" ]
-
-
-
-EOF
-
-  echo "File created: $filename"
-
-  # Build Docker image
-  #cp "${CURRENT_DIR}/dockerfiles/ranger/dev-support/ranger-docker/dist/ranger-3.0.0-SNAPSHOT-admin.tar.gz" "${CURRENT_DIR}/charts/ranger/ranger-admin"
-
-
-  #if [ ! -d "${CURRENT_DIR}/charts/ranger/ranger-admin/scripts" ]; then
-  #  cp -r "${CURRENT_DIR}/dockerfiles/ranger/security-admin/scripts/" "${CURRENT_DIR}/charts/ranger/ranger-admin/"
-  #fi
-
-  #if [ ! -d "${CURRENT_DIR}/charts/ranger/ranger-admin/dist" ]; then
-  #  cp -r "${CURRENT_DIR}/dockerfiles/ranger/dev-support/ranger-docker/dist/" "${CURRENT_DIR}/charts/ranger/ranger-admin/"
-  #fi
-
-  #if [ ! -d "${CURRENT_DIR}/charts/ranger/ranger-admin/downloads" ]; then
-  #  cp -r "${CURRENT_DIR}/dockerfiles/ranger/dev-support/ranger-docker/downloads/" "${CURRENT_DIR}/charts/ranger/ranger-admin/"
-  #fi
-
-  #if [ ! -d "${CURRENT_DIR}/charts/ranger/ranger-admin/contrib" ]; then
-  #  cp -r "${CURRENT_DIR}/dockerfiles/ranger/security-admin/contrib/" "${CURRENT_DIR}/charts/ranger/ranger-admin/"
-  #fi
-
-  cd "charts/ranger/ranger-admin" && echo "cd to charts/ranger/ranger-admin" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin:latest" . --no-cache && cd "${CURRENT_DIR}"
-
-  aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin"
-
-  # Push Docker image to ECR
-  docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin:latest"
-
-fi
-
-cd "${CURRENT_DIR}"
-
-
-
-######################################
-# Build trino image
-#####################################
-print_with_header "Build trino image"
-
-# Set the name of the ECR repository to check
-ecr_repository_name="dliab-trino"
-
-# Check if the ECR repository exists
-if aws ecr describe-repositories --repository-names "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}" &> /dev/null; then
-    echo "ECR repository '$ecr_repository_name' exists in region '${AWS_DEFAULT_REGION}'."
-else
-    echo "ECR repository '$ecr_repository_name' does not exist in region '${AWS_DEFAULT_REGION}'."
-    # Create the ECR repository
-    aws ecr create-repository --repository-name "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}"
-
-    # Output success message
-    echo "ECR repository '$ecr_repository_name' created in region '${AWS_DEFAULT_REGION}'."
-fi
-cd "${CURRENT_DIR}"
-
-# Check if Docker image with the specified tag exists
-if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
-    echo "Docker image "${ecr_repository_name}:latest" exists locally."
-else
-
-    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
-
-    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
-    cd "charts/ranger/trino" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
-
-    # Push Docker image to ECR
-    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest"
-fi
-
-cd "${CURRENT_DIR}"
 
 
 ######################################
@@ -1813,6 +1643,8 @@ else
 fi
 cd "${CURRENT_DIR}"
 
+
+
 # Check if Docker image with the specified tag exists
 if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
     echo "Docker image "${ecr_repository_name}:latest" exists locally."
@@ -1829,27 +1661,28 @@ else
 
     filename="${CURRENT_DIR}/dockerfiles/starburst-enterprise-paygo/Dockerfile"
 
-    if [ ! -e "$filename" ]; then
-        # Create the file
-        cat > "$filename" <<EOF
+
+    # Create the file
+    mkdir -p "${CURRENT_DIR}/dockerfiles/starburst-enterprise-paygo/plugins"
+    echo "Copying jar files"
+    cp -f "${CURRENT_DIR}/plugins/group-provider/target"/*.jar "${CURRENT_DIR}/dockerfiles/starburst-enterprise-paygo/plugins"
+
+    cat > "$filename" <<EOF
 FROM 709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/starburst-enterprise-paygo:429-e.1.aws.114.amd64
 
+RUN mkdir -p /usr/lib/starburst/plugin/ldap-ad
+COPY plugins/*.jar  /usr/lib/starburst/plugin/ldap-ad
 
-RUN ls -latr /usr/lib/starburst
-
-RUN mkdir -p /usr/lib/starburst/plugin/ldap-ad && cd /usr/lib/starburst/plugin/ldap-ad && wget https://github.com/arghya18/trino-group-provider-ldap-ad/releases/download/v1.0/trino-group-provider-ldap-ad-1.0.zip && unzip trino-group-provider-ldap-ad-1.0.zip && rm trino-group-provider-ldap-ad-1.0.zip
 
 EOF
 
-        echo "File created: $filename"
-    else
-        echo "File already exists: $filename"
-    fi
+    echo "File created: $filename"
+
 
     aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
 
     echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
-    cd "dockerfiles/starburst-enterprise-paygo" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
+    cd "dockerfiles/starburst-enterprise-paygo" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . --no-cache && cd "${CURRENT_DIR}"
 
     # Push Docker image to ECR
     docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest"
@@ -1857,7 +1690,6 @@ fi
 
 cd "${CURRENT_DIR}"
 
-exit 0
 
 ######################################
 # Build starburst-trino-scaler image
@@ -2171,6 +2003,9 @@ cd "${CURRENT_DIR}"
 ######################################
 # Done building docker images
 #####################################
+
+exit 0
+
 print_with_header "Done building docker images"
 
 ################################################
@@ -2224,7 +2059,7 @@ else
     --node-type "$node_instance_type" \
     --node-volume-size 50 \
     --ssh-access \
-    --ssh-public-key "dliab" \
+    --ssh-public-key "${KEY_NAME}" \
     --version "${EKS_VERSION}" \
     --managed \
     --asg-access
