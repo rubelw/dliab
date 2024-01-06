@@ -7,3 +7,5 @@ dockerfiles/
 dockerfiles/*
 plugins/
 plugins/*
+.idea/
+idea/*
