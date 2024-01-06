@@ -11,9 +11,6 @@ plugins/*
 idea/*
 ca.crt
 ca.csr
-<<<<<<< HEAD
 ca.key
 **/.git/
-=======
-ca.key
->>>>>>> bb046e168928f9bc6005b369e3a2ce73f41f453a
+
