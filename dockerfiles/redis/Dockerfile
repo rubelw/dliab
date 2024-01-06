@@ -1,2 +1,0 @@
-FROM bitnami/redis:latest
-

@@ -1,0 +1,8 @@
+airflow_password: admin
+openmetadata_password: openmetadata_pass
+superset_password: superset_pass
+mysql_password: admin
+redis_password: redis
+ldap_password: passw0rd
+openldap_tls_cert: dummy
+

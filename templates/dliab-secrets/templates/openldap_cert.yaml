@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openldap-cert
+  labels:
+    app: openldap-cert
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    release: "{{ .Release.Name }}"
+    heritage: "{{ .Release.Service }}"
+type: Opaque
+stringData:
+ openmetadata-airflow-password: {{ .Values.openldap_tls_cert | quote }}

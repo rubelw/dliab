@@ -1,3 +1,15 @@
 ./venv
 venv/
 venv/*
+charts/
+charts/*
+dockerfiles/
+dockerfiles/*
+plugins/
+plugins/*
+.idea/
+idea/*
+ca.crt
+ca.csr
+ca.key
+**/.git/

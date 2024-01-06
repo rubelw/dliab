@@ -38,11 +38,11 @@ On a centos instance, run:
 * Deploy Trino
 * Deploy Superset
 * Port forwarding all resources to local environment
-** kubectl port-forward services/openldap-chart 3389:389 &
-** kubectl port-forward --namespace default svc/openmetadata 8585:8585 &
-** kubectl port-forward --namespace default svc/airflow-chart-web 8080:8080 &
-** kubectl port-forward services/openldap-chart-phpldapadmin 8081:80 &
-** kubectl port-forward service/postgres-chart-postgresql 5432:5432 & 
+- kubectl port-forward services/openldap-chart 3389:389 &
+- kubectl port-forward --namespace default svc/openmetadata 8585:8585 &
+- kubectl port-forward --namespace default svc/airflow-chart-web 8080:8080 &
+- kubectl port-forward services/openldap-chart-phpldapadmin 8081:80 &
+- kubectl port-forward service/postgres-chart-postgresql 5432:5432 & 
 
 
 
@@ -60,7 +60,7 @@ On a centos instance, run:
 ## Postgres Database
 * Local port: 5432
 * Postgres user: postgres
-* Posegres password: postgres_pass (stored via dliab secrets chart)
+* Postgres password: postgres
 
 ## OpenMetadata Admin Login
 * Local port: 8585
@@ -81,5 +81,10 @@ On a centos instance, run:
 * Local port: 8080
 * username: tfoster
 * password: passw0rd
+
+## Ranger Login
+* Local port: 6050
+* username:
+* password: 
 
 

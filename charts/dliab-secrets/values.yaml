@@ -1,7 +1,0 @@
-airflow_password: admin
-postgres_password: openmetadata_pass
-superset_password: superset_pass
-mysql_password: admin
-redis_password: redis
-ldap_password: passw0rd
-
