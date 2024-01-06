@@ -1,9 +1,0 @@
-# Copyright VMware, Inc.
-# SPDX-License-Identifier: APACHE-2.0
-
-file:
-  /app/site.webmanifest:
-    exists: true
-    contents:
-      - "Kubeapps Dashboard"
-
