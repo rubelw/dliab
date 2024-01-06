@@ -7,6 +7,8 @@ DOCKER_GROUP="docker"
 SLEEP=0
 EKS_VERSION="1.28"
 CLUSTER_NAME="dliab-eks-cluster"
+JDK_DOWNLOAD_LINK="https://corretto.aws/downloads/latest/amazon-corretto-21-x64-linux-jdk.tar.gz"
+JDK_VERSION=21
 
 while getopts ":d" opt; do
   case $opt in
@@ -23,6 +25,19 @@ done
 if [ "$delete" ]; then
   echo "Delete mode is enabled."
   eksctl delete cluster --name "${CLUSTER_NAME}"
+  if [ -e "${HOME}/.ssh/dliab" ]; then
+      rm "${HOME}/.ssh/dliab"
+      rm "${HOME}/.ssh/dliab.pub"
+      aws ec2 delete-key-pair --key-name dliab
+  fi
+  if [ -e "${CURRENT_DIR}/ca.crt" ]; then
+    rm "${CURRENT_DIR}/ca.crt"
+    rm "${CURRENT_DIR}/ca.csr"
+    rm "${CURRENT_DIR}/ca.key"
+  fi
+
+
+
   exit 0
 fi
 
@@ -41,7 +56,7 @@ print_with_header() {
     printf "\n\n%${header_length}s\n" | tr ' ' "$header_char"
 
     # Print the provided string
-    echo "$1 - ${LINENO}"
+    echo "$1 "
 
     # Print footer
     printf "%${header_length}s\n" | tr ' ' "$header_char"
@@ -117,27 +132,120 @@ prompt_user() {
     esac
 }
 
-print_with_header "Getting default ssh key path for ${USER}"
-get_default_ssh_key_path
-echo "Default ssh key path is:  ${DEFAULT_SSH_KEY_PATH}"
-sleep $SLEEP  # Sleeping so user can see info on screen
-
-prompt_user "Do you have an EC2 keypair with the same name as your default ssh key?"
-result=$?
-
-if [ $result -eq 0 ]; then
-    keypair=$(basename "${DEFAULT_SSH_KEY_PATH}")
-    export KEYPAIR_NAME="${keypair}"
-    echo "Keypair name set to ${KEYPAIR_NAME} - Continuing..."
-elif [ $result -eq 1 ]; then
-    echo "Please create an EC2 keypair with the same name as your defailt ssh key and try running again."
-    echo "Exiting."
-    exit 1
+print_with_header "Ensure Maven is installed"
+if ! command -v mvn &> /dev/null; then
+    echo "Maven is not installed. Installing Maven..."
+    sudo yum install -y maven  # Use 'sudo apt-get install -y maven' for Ubuntu/Debian
+    echo "Maven has been installed."
 else
-    echo "Invalid input. Exiting."
-    exit 1
+    echo "Maven is already installed."
 fi
 
+# Function to compare version numbers
+version_compare() {
+    [[ $1 == $2 ]] && return 0
+    local IFS=.
+    local i ver1=($1) ver2=($2)
+    for ((i = 0; i < ${#ver1[@]}; i++)); do
+        if ((10#${ver1[i]} > 10#${ver2[i]})); then
+            return 1
+        elif ((10#${ver1[i]} < 10#${ver2[i]})); then
+            return 2
+        fi
+    done
+    return 0
+}
+
+# Function to get the latest Maven version from the official Apache Maven website
+get_latest_maven_version() {
+    curl -sSL https://maven.apache.org/download.cgi | grep -oP 'apache-maven-\K\d+\.\d+\.\d+' | sort -V | tail -n1
+}
+
+#######################
+# Create ca.crt
+#######################
+
+print_with_header "Create ca.crt"
+
+if [ ! -e "ca.crt" ]; then
+  # Generate a CA key
+  openssl genpkey -algorithm RSA -out ca.key
+  # Generate a CA certificate signing request
+  openssl req -new -key ca.key -out ca.csr -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=sirius.com"
+  # Self sign the certificate
+  openssl x509 -req -days 365 -in ca.csr -signkey ca.key -out ca.crt
+
+  echo "CA Certificate and key generated"
+
+else
+  echo "CA Certificate and key already generated"
+fi
+
+#########################
+# Create ssh key
+################
+
+if [ ! -e "${HOME}/.ssh/dliab" ]; then
+  ssh-keygen -t rsa -b 2048 -f "${HOME}/.ssh/dliab" -N ""
+  aws ec2 import-key-pair --key-name dliab --public-key-material "$(cat $HOME/.ssh/dliab.pub)"
+
+fi
+
+# Check if Maven is installed
+if command -v mvn &>/dev/null; then
+    installed_version=$(mvn -v | grep -oP '(?<=Apache Maven )\d+\.\d+\.\d+')
+    latest_version=$(get_latest_maven_version)
+
+    # Compare versions
+    version_compare "$installed_version" "$latest_version"
+
+    case $? in
+        0) echo "Maven is already the latest version: $installed_version";;
+        1) echo "Updating Maven from $installed_version to $latest_version..."
+           # Install or update Maven
+           sudo yum install -y "apache-maven-$latest_version"  # Use 'sudo apt-get install -y "maven=$latest_version"' for Ubuntu/Debian
+           echo "Maven has been updated to version $latest_version.";;
+        2) echo "Maven is already the latest version: $installed_version";;
+    esac
+else
+    echo "Maven is not installed. Installing the latest version..."
+    # Install Maven
+    sudo yum install -y maven  # Use 'sudo apt-get install -y maven' for Ubuntu/Debian
+    echo "Maven has been installed."
+fi
+
+
+print_with_header "Setup Maven build variables"
+M2_HOME=$(which mvn)
+M2=$M2_HOME/bin
+
+
+print_with_header "Ensure GCC is installed"
+# Function to check if GCC is installed
+is_gcc_installed() {
+    command -v gcc &>/dev/null
+}
+
+############################
+# Check if GCC is installed
+############################
+if is_gcc_installed; then
+    echo "GCC is already installed."
+else
+    echo "GCC is not installed. Installing..."
+
+    return_value=$(prompt_user "GCC is not installed, are you cool with sudoing to install gcc?")
+
+    if [ "$return_value" -eq 0 ]; then
+      # Install GCC
+      sudo yum install -y gcc  # Use 'sudo apt-get install -y gcc' for Ubuntu/Debian
+
+      echo "GCC has been installed."
+    else
+      print_with_header "Exiting"
+      exit 1
+    fi
+fi
 
 
 print_with_header "Killing all port forwarding"
@@ -152,11 +260,19 @@ VENV_DIR="./venv"  # Replace with the desired path for the virtual environment
 if [ ! -d "$VENV_DIR" ]; then
     echo "Creating virtual environment..."
 
-    # Create the virtual environment using Python 3.9
-    python3 -m venv "$VENV_DIR"
+    return_value=$(prompt_user "Pythong virtualenv is not installed, are you cool with installing virtualenv")
 
-    echo "Virtual environment created at '$VENV_DIR'."
-    source "$VENV_DIR/bin/activate"
+    if [ "$return_value" -eq 0 ]; then
+
+      # Create the virtual environment using Python 3.9
+      python3 -m venv "$VENV_DIR"
+
+      echo "Virtual environment created at '$VENV_DIR'."
+      source "$VENV_DIR/bin/activate"
+    else
+      print_with_header "Exiting"
+      exit 1
+    fi
 
 else
     echo "Virtual environment already exists at '$VENV_DIR'."
@@ -224,10 +340,20 @@ print_with_header "Checking if kubectl installed in ${HOME}/bin directory"
 if [ -f "${HOME}/bin/kubectl" ]; then
     echo "kubectl exists in directory"
 else
-    kubectl_version="1.28.3"
-    cd "${HOME}/bin"
-    curl -O "https://s3.us-west-2.amazonaws.com/amazon-eks/${kubectl_version}/2023-11-14/bin/linux/amd64/kubectl"
-    chmod +x ./kubectl
+
+    return_value=$(prompt_user "kubectl is not installed, are you cool with installing kubectl?")
+
+    if [ "$return_value" -eq 0 ]; then
+
+      kubectl_version="1.28.3"
+      cd "${HOME}/bin"
+      curl -O "https://s3.us-west-2.amazonaws.com/amazon-eks/${kubectl_version}/2023-11-14/bin/linux/amd64/kubectl"
+      chmod +x ./kubectl
+
+    else
+      print_with_header "Exiting"
+      exit 1
+    fi
 fi
 cd "${CURRENT_DIR}"
 
@@ -236,14 +362,21 @@ print_with_header "Checking if helm installed in ${HOME}/bin directory"
 if [ -f "${HOME}/bin/helm" ]; then
     echo "helm exists in directory"
 else
-    cd "${HOME}/bin"
-    helm_version="3.13.0"
-    curl -LO "https://get.helm.sh/helm-v${helm_version}-linux-amd64.tar.gz"
-    tar -zxvf helm-v${helm_version}-linux-amd64.tar.gz
-    mv linux-amd64/helm "${HOME}/bin/"
-    rm -rf linux-amd64
-    rm "helm-v${helm_version}-linux-amd64.tar.gz"
-    chmod +x helm
+    return_value=$(prompt_user "Helm is not installed, are you cool with installing helm?")
+
+    if [ "$return_value" -eq 0 ]; then
+      cd "${HOME}/bin"
+      helm_version="3.13.0"
+      curl -LO "https://get.helm.sh/helm-v${helm_version}-linux-amd64.tar.gz"
+      tar -zxvf helm-v${helm_version}-linux-amd64.tar.gz
+      mv linux-amd64/helm "${HOME}/bin/"
+      rm -rf linux-amd64
+      rm "helm-v${helm_version}-linux-amd64.tar.gz"
+      chmod +x helm
+    else
+      print_with_header "Exiting"
+      exit 1
+    fi
 fi
 cd "${CURRENT_DIR}"
 
@@ -252,15 +385,22 @@ print_with_header "Checking if aksctl is installed in ${HOME}/bin directory"
 if [ -f "${HOME}/bin/eksctl" ]; then
     echo "eksctl exists in directory"
 else
-    echo "Installing eksctl..."
-    cd "${HOME}/bin"
-    ARCH=amd64
-    PLATFORM=$(uname -s)_$ARCH
-    curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$PLATFORM.tar.gz"
-    # (Optional) Verify checksum
-    curl -sL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_checksums.txt" | grep $PLATFORM | sha256sum --check
-    tar -xzf eksctl_$PLATFORM.tar.gz -C "${HOME}/bin" && rm eksctl_$PLATFORM.tar.gz
+    return_value=$(prompt_user "eksctl is not installed, are you cool with installiung eksctl?")
 
+    if [ "$return_value" -eq 0 ]; then
+
+    echo "Installing eksctl..."
+      cd "${HOME}/bin"
+      ARCH=amd64
+      PLATFORM=$(uname -s)_$ARCH
+      curl -sLO "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$PLATFORM.tar.gz"
+      # (Optional) Verify checksum
+      curl -sL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_checksums.txt" | grep $PLATFORM | sha256sum --check
+      tar -xzf eksctl_$PLATFORM.tar.gz -C "${HOME}/bin" && rm eksctl_$PLATFORM.tar.gz
+    else
+      print_with_header "Exiting"
+      exit 1
+    fi
 fi
 cd "${CURRENT_DIR}"
 
@@ -271,7 +411,14 @@ if command -v git &> /dev/null ; then
     echo "Git is installed"
 else
     echo "Git is not installed"
-    sudo yum install git -y
+    return_value=$(prompt_user "git not installed, are you cool with sudoing to install git?")
+
+    if [ "$return_value" -eq 0 ]; then
+       sudo yum install git -y
+    else
+      print_with_header "Exiting"
+      exit 1
+    fi
 fi
 
 
@@ -287,6 +434,14 @@ if [ ! -d "${CURRENT_DIR}/dockerfiles" ]; then
 fi
 sleep $SLEEP  # Sleeping so user can see info on screen
 
+print_with_header "Check if plugins directory exists"
+if [ ! -d "${CURRENT_DIR}/plugins" ]; then
+  mkdir -p "${CURRENT_DIR}/plugins"
+fi
+sleep $SLEEP  # Sleeping so user can see info on screen
+
+
+
 
 
 print_with_header "Check if docker is installed"
@@ -294,18 +449,25 @@ if command -v docker &> /dev/null
 then
     echo "Docker is installed.- ${LINENO}"
 else
-    echo "Docker is not installed.- ${LINENO}"
-    # Update the system - 'sudo yum update':
-    sudo yum update
+    return_value=$(prompt_user "Docker is not installed, are you cool with sudoing to install docker?")
+    if [ "$return_value" -eq 0 ]; then
 
-    #Install the required dependencies:
-    sudo yum install -y yum-utils device-mapper-persistent-data lvm2
+      echo "Docker is not installed.- ${LINENO}"
+      # Update the system - 'sudo yum update':
+      sudo yum update
 
-    # Add the Docker repository:
-    sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+      #Install the required dependencies:
+      sudo yum install -y yum-utils device-mapper-persistent-data lvm2
 
-    #Install Docker:
-    sudo yum install docker-ce docker-ce-cli containerd.io
+      # Add the Docker repository:
+      sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+      #Install Docker:
+      sudo yum install docker-ce docker-ce-cli containerd.io
+    else
+      print_with_header "Exiting"
+      exit 1
+    fi
 fi
 
 
@@ -328,15 +490,135 @@ DOCKER_STATUS=$(systemctl is-active docker)
 if [ "$DOCKER_STATUS" = "active" ]; then
     echo "Docker is already running.- ${LINENO}"
 else
-    echo "Docker is not running. Starting Docker...- ${LINENO}"
-    sudo systemctl start docker
-    echo "Docker is now running.- ${LINENO}"
+    return_value=$(prompt_user "${USER} is not a member of the docker group, are you cool with sudoing to update ${USER}?")
+
+    if [ "$return_value" -eq 0 ]; then
+      echo "Docker is not running. Starting Docker...- ${LINENO}"
+      sudo systemctl start docker
+      echo "Docker is now running.- ${LINENO}"
+    else
+      print_with_header "Exiting"
+      exit 1
+    fi
 fi
 
 
+print_with_header "Setup config directory"
+if [ ! -d "${CURRENT_DIR}/configs" ]; then
+  mkdir -p "${CURRENT_DIR}/configs"
+  cd "${CURRENT_DIR}"
+else
+  echo "Directory configs already exists. Skipping git clone.- ${LINENO}"
+fi
+
+
+
+
 ##########################################
-# Dowload all the needed helm charts
+# Download all the needed helm charts
 ##########################################
+
+print_with_header "Install starburst"
+directory="starburst-enterprise"
+
+if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
+
+  export HELM_EXPERIMENTAL_OCI=1
+  aws ecr get-login-password \
+      --region us-east-1 | helm registry login \
+      --username AWS \
+      --password-stdin 709825985650.dkr.ecr.us-east-1.amazonaws.com
+
+
+  cd "${CURRENT_DIR}/charts/"
+  helm pull oci://709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/starburst-enterprise-helm-chart-paygo --version 429.1.0-aws.114
+
+  tar -zxvf starburst-enterprise-helm-chart-paygo-429.1.0-aws.114.tgz
+  rm  starburst-enterprise-helm-chart-paygo-429.1.0-aws.114.tgz
+
+  cd "${CURRENT_DIR}"
+else
+  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
+fi
+
+
+print_with_header "Add extra values file for starburst-enterprise"
+
+output_file="${CURRENT_DIR}/charts/starburst-enterprise/additional-values.yaml"
+
+cat <<EOF > "$output_file"
+coordinator:
+  etcFiles:
+    group-provider:
+      properties:
+        group-provider.properties: |
+          group-provider.name=ldap-ad
+          ldap.url=ldap://openldap-chart.default.svc.cluster.local:389
+          ldap.allow-insecure=true
+          ldap.admin-password=passw0rd
+          ldap.user-base-dn=dc=sirius,dc=com
+          ldap.user-search-filter=(&(objectClass=user)(sAMAccountName={USER}))
+          ldap.group-filter=All
+          ldap.cache-ttl=1h
+          ldap.max-retry-count=5
+          ldap.retry-interval=2s
+        password-authenticator.properties: |
+          password-authenticator.name=ldap
+          ldap.allow-insecure=true
+          ldap.url=ldap://openldap-chart.default.svc.cluster.local:389
+          ldap.user-bind-pattern=${USER}@sirius.com
+          ldap.user-base-dn=ou=users,dc=sirius,dc=com
+          ldap.group-auth-pattern=(&(objectClass=user)(sAMAccountName=${USER})(|memberOf=CN=admin)))
+  initContainers:
+  - name: install-plugin
+    image: alpine:3.14
+    command: ["sh"]
+    args:
+    - -c
+    - |
+      mkdir -p /usr/lib/starburst/plugin/ldap-ad && cd /usr/lib/starburst/plugin/ldap-ad && wget https://github.com/arghya18/trino-group-provider-ldap-ad/releases/download/v1.0/trino-group-provider-ldap-ad-1.0.zip && unzip trino-group-provider-ldap-ad-1.0.zip && rm trino-group-provider-ldap-ad-1.0.zip
+
+EOF
+
+
+print_with_header "Install starburst-ranger"
+directory="starburst-ranger"
+
+if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
+
+  export HELM_EXPERIMENTAL_OCI=1
+  aws ecr get-login-password \
+      --region us-east-1 | helm registry login \
+      --username AWS \
+      --password-stdin 888508661428.dkr.ecr.us-east-2.amazonaws.com
+
+  cd "${CURRENT_DIR}/charts/"
+  helm pull oci://888508661428.dkr.ecr.us-east-2.amazonaws.com/starburst-ranger-helm-chart  --version 429.1.0
+
+  tar -zxvf starburst-ranger-helm-chart-429.1.0.tgz
+  rm  starburst-ranger-helm-chart-429.1.0.tgz
+
+  cd "${CURRENT_DIR}"
+else
+  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
+fi
+
+
+print_with_header "Install ranger charts"
+directory="ranger"
+
+if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
+  mkdir -p "${CURRENT_DIR}/charts/${directory}"
+  git clone https://github.com/MustafaMirza45/Apache-ranger-kubernetes.git "${CURRENT_DIR}/charts/${directory}"
+  cd "${CURRENT_DIR}/charts/${directory}"
+  rm -rf .git
+
+
+  cd "${CURRENT_DIR}"
+else
+  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
+fi
+
 
 print_with_header "Install airflow charts"
 directory="airflow"
@@ -492,6 +774,39 @@ fi
 ####################################
 # Download all the dockerfiles
 ####################################
+
+
+print_with_header "Clone ranger containers"
+directory="ranger"
+
+if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
+  echo "${directory} does not exist"
+  mkdir -p "${CURRENT_DIR}/dockerfiles/${directory}"
+  git clone https://github.com/apache/ranger.git "${CURRENT_DIR}/dockerfiles/${directory}"
+  cd "dockerfiles/${directory}"
+  rm -rf .git
+  cd "${CURRENT_DIR}"
+else
+  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
+fi
+
+
+
+print_with_header "Clone trino containers"
+directory="trino"
+
+if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
+  echo "${directory} does not exist"
+  mkdir -p "${CURRENT_DIR}/dockerfiles/${directory}"
+  git clone https://github.com/trinodb/trino.git "${CURRENT_DIR}/dockerfiles/${directory}"
+  cd "dockerfiles/${directory}"
+  rm -rf .git
+  cd "${CURRENT_DIR}"
+else
+  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
+fi
+
+
 print_with_header "Clone binami containers"
 directory="bitnami"
 
@@ -522,16 +837,198 @@ else
 fi
 
 
+print_with_header "Clone ranger-admin dockerfiles"
+directory="ranger-admin"
+
+if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
+  echo "${directory} does not exist"
+  mkdir -p "${CURRENT_DIR}/dockerfiles/${directory}"
+  git clone https://github.com/aakashnand.trino-ranger-demo.git" ${CURRENT_DIR}/dockerfiles/${directory}"
+  cd "dockerfiles/${directory}"
+  rm -rf .git
+  cd "${CURRENT_DIR}"
+else
+  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
+fi
+
+
+
 ######################################
 ######################################
 # Build dockerfiles
 #####################################
 ######################################
 
+######################################
+# Build ranger-base image
+#####################################
+print_with_header "Build ranger-base image"
+
+# Set the name of the ECR repository to check
+ecr_repository_name="dliab-ranger-base"
+
+# Check if the ECR repository exists
+if aws ecr describe-repositories --repository-names "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}" &> /dev/null; then
+    echo "ECR repository '$ecr_repository_name' exists in region '${AWS_DEFAULT_REGION}'."
+else
+    echo "ECR repository '$ecr_repository_name' does not exist in region '${AWS_DEFAULT_REGION}'."
+    # Create the ECR repository
+    aws ecr create-repository --repository-name "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}"
+    aws ecr create-repository --repository-name "dliab-ranger-base" --region "${AWS_DEFAULT_REGION}"
+    aws ecr create-repository --repository-name "dliab-ranger-usersync" --region "${AWS_DEFAULT_REGION}"
+    aws ecr create-repository --repository-name "dliab-ranger-postgres" --region "${AWS_DEFAULT_REGION}"
+    aws ecr create-repository --repository-name "dliab-ranger-solr" --region "${AWS_DEFAULT_REGION}"
+    aws ecr create-repository --repository-name "dliab-ranger-zk" --region "${AWS_DEFAULT_REGION}"
+
+
+    # Output success message
+    echo "ECR repository '$ecr_repository_name' created in region '${AWS_DEFAULT_REGION}'."
+fi
+cd "${CURRENT_DIR}"
+
+# Check if Docker image with the specified tag exists
+if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" exists locally."
+else
+
+    print_with_header "Building ranger images"
+    echo "This will take about an hour"
+
+    cd "dockerfiles/ranger" && ./ranger_in_docker  up && ./ranger_in_docker down
+
+
+    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
+
+    docker tag ranger-base:latest "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-base:latest" && cd "${CURRENT_DIR}"
+    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-base:latest"
+
+    docker tag ranger-base:latest "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-postgres:latest" && cd "${CURRENT_DIR}"
+    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-postgres:latest"
+
+fi
+
+print_with_header "Check if dliab-ranger-admin Docker image with the specified tag exists"
+if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin" | grep -q "latest"; then
+    echo "Docker image \"dliab-ranger-admin:latest\" exists locally."
+else
+
+  directory="${CURRENT_DIR}/charts/ranger/ranger-admin"
+
+  if [ -d "$directory" ]; then
+      echo "Directory exists."
+  else
+      echo "Directory does not exist."
+      mkdir -p $directory
+  fi
+
+  filename="${CURRENT_DIR}/charts/ranger/ranger-admin/Dockerfile"
+
+
+        cat > "$filename" <<EOF
+ARG RANGER_VERSION=3.0.0
+ARG RANGER_DB_TYPE=POSTGRES
+ARG TARGETARCH=amd64
+ARG RANGER_ADMIN_JAVA_VERSION=8
+
+FROM ranger:latest
+
+USER root
+
+RUN cp /usr/share/java/postgresql.jar /root/postgresql.jar
+RUN ls -latr
+
+
+USER ranger
+
+COPY install.properties /home/ranger/admin
+COPY install.properties /opt/ranger/admin
+
+
+
+
+ENTRYPOINT [ "/home/ranger/scripts/ranger.sh" ]
+
+
+
+EOF
+
+  echo "File created: $filename"
+
+  # Build Docker image
+  #cp "${CURRENT_DIR}/dockerfiles/ranger/dev-support/ranger-docker/dist/ranger-3.0.0-SNAPSHOT-admin.tar.gz" "${CURRENT_DIR}/charts/ranger/ranger-admin"
+
+
+  #if [ ! -d "${CURRENT_DIR}/charts/ranger/ranger-admin/scripts" ]; then
+  #  cp -r "${CURRENT_DIR}/dockerfiles/ranger/security-admin/scripts/" "${CURRENT_DIR}/charts/ranger/ranger-admin/"
+  #fi
+
+  #if [ ! -d "${CURRENT_DIR}/charts/ranger/ranger-admin/dist" ]; then
+  #  cp -r "${CURRENT_DIR}/dockerfiles/ranger/dev-support/ranger-docker/dist/" "${CURRENT_DIR}/charts/ranger/ranger-admin/"
+  #fi
+
+  #if [ ! -d "${CURRENT_DIR}/charts/ranger/ranger-admin/downloads" ]; then
+  #  cp -r "${CURRENT_DIR}/dockerfiles/ranger/dev-support/ranger-docker/downloads/" "${CURRENT_DIR}/charts/ranger/ranger-admin/"
+  #fi
+
+  #if [ ! -d "${CURRENT_DIR}/charts/ranger/ranger-admin/contrib" ]; then
+  #  cp -r "${CURRENT_DIR}/dockerfiles/ranger/security-admin/contrib/" "${CURRENT_DIR}/charts/ranger/ranger-admin/"
+  #fi
+
+  cd "charts/ranger/ranger-admin" && echo "cd to charts/ranger/ranger-admin" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin:latest" . --no-cache && cd "${CURRENT_DIR}"
+
+  aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin"
+
+  # Push Docker image to ECR
+  docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin:latest"
+
+fi
+
+cd "${CURRENT_DIR}"
+
+
+
+######################################
+# Build trino image
+#####################################
+print_with_header "Build trino image"
+
+# Set the name of the ECR repository to check
+ecr_repository_name="dliab-trino"
+
+# Check if the ECR repository exists
+if aws ecr describe-repositories --repository-names "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}" &> /dev/null; then
+    echo "ECR repository '$ecr_repository_name' exists in region '${AWS_DEFAULT_REGION}'."
+else
+    echo "ECR repository '$ecr_repository_name' does not exist in region '${AWS_DEFAULT_REGION}'."
+    # Create the ECR repository
+    aws ecr create-repository --repository-name "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}"
+
+    # Output success message
+    echo "ECR repository '$ecr_repository_name' created in region '${AWS_DEFAULT_REGION}'."
+fi
+cd "${CURRENT_DIR}"
+
+# Check if Docker image with the specified tag exists
+if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
+    echo "Docker image "${ecr_repository_name}:latest" exists locally."
+else
+
+    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
+
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    cd "charts/ranger/trino" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
+
+    # Push Docker image to ECR
+    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest"
+fi
+
+cd "${CURRENT_DIR}"
+
 
 ######################################
 # Build opensearch image
 #####################################
+
 print_with_header "Build opensearch image"
 
 # Set the name of the ECR repository to check
@@ -1251,6 +1748,426 @@ fi
 
 cd "${CURRENT_DIR}"
 
+
+
+######################################
+# Pull starburst-enterprise imaged
+#####################################
+print_with_header "Pull starburst-enterprise imaged"
+
+# Pull images if they don't exist
+if docker images "709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/keda-trino-scaler-paygo" | grep -q "0.1.15.aws.114.amd64"; then
+    echo "Docker image "${ecr_repository_name}:latest" exists locally."
+else
+
+  aws ecr get-login-password \
+      --region us-east-1 | docker login \
+      --username AWS \
+      --password-stdin 709825985650.dkr.ecr.us-east-1.amazonaws.com
+  AWSMP_IMAGES="709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/keda-trino-scaler-paygo:0.1.15.aws.114.amd64,709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/starburst-enterprise-paygo:429-e.1.aws.114.amd64,709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/starburst-enterprise-init-paygo:1.5.6.aws.114.amd64,709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/starburst-license-verifier-paygo:429.1.0.aws.114.amd64"
+  for i in $(echo $AWSMP_IMAGES | sed "s/,/ /g"); do docker pull $i; done
+
+fi
+
+
+
+######################################
+# Pull starburst-ranger imaged
+#####################################
+print_with_header "Pull starburst-ranger imaged"
+
+# Pull images if they don't exist
+if docker images "888508661428.dkr.ecr.us-east-2.amazonaws.com/ranger-usersync" | grep -q "2.4.0-e.2"; then
+    echo "Docker image "${ecr_repository_name}:latest" exists locally."
+else
+
+  aws ecr get-login-password \
+  --region us-east-2 | docker login \
+  --username AWS \
+  --password-stdin 888508661428.dkr.ecr.us-east-2.amazonaws.com
+
+
+  AWSMP_IMAGES="888508661428.dkr.ecr.us-east-2.amazonaws.com/ranger-usersync:2.4.0-e.2,888508661428.dkr.ecr.us-east-2.amazonaws.com/starburst-ranger-admin:2.4.0-e.2"
+  for i in $(echo $AWSMP_IMAGES | sed "s/,/ /g"); do docker pull $i; done
+
+fi
+
+
+######################################
+# Build starburst-enterprise-paygo image
+#####################################
+print_with_header "Build starburst-enterprise-paygo image"
+
+ecr_repository_name="dliab-starburst-enterprise-paygo"
+
+# Check if the ECR repository exists
+if aws ecr describe-repositories --repository-names "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}" &> /dev/null; then
+    echo "ECR repository '$ecr_repository_name' exists in region '${AWS_DEFAULT_REGION}'."
+else
+    echo "ECR repository '$ecr_repository_name' does not exist in region '${AWS_DEFAULT_REGION}'."
+    # Create the ECR repository
+    aws ecr create-repository --repository-name "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}"
+
+    # Output success message
+    echo "ECR repository '$ecr_repository_name' created in region '${AWS_DEFAULT_REGION}'."
+fi
+cd "${CURRENT_DIR}"
+
+# Check if Docker image with the specified tag exists
+if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
+    echo "Docker image "${ecr_repository_name}:latest" exists locally."
+else
+
+    directory="${CURRENT_DIR}/dockerfiles/starburst-enterprise-paygo"
+
+    if [ -d "$directory" ]; then
+        echo "Directory exists."
+    else
+        echo "Directory does not exist."
+        mkdir -p $directory
+    fi
+
+    filename="${CURRENT_DIR}/dockerfiles/starburst-enterprise-paygo/Dockerfile"
+
+    if [ ! -e "$filename" ]; then
+        # Create the file
+        cat > "$filename" <<EOF
+FROM 709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/starburst-enterprise-paygo:429-e.1.aws.114.amd64
+
+
+RUN ls -latr /usr/lib/starburst
+
+RUN mkdir -p /usr/lib/starburst/plugin/ldap-ad && cd /usr/lib/starburst/plugin/ldap-ad && wget https://github.com/arghya18/trino-group-provider-ldap-ad/releases/download/v1.0/trino-group-provider-ldap-ad-1.0.zip && unzip trino-group-provider-ldap-ad-1.0.zip && rm trino-group-provider-ldap-ad-1.0.zip
+
+EOF
+
+        echo "File created: $filename"
+    else
+        echo "File already exists: $filename"
+    fi
+
+    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
+
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    cd "dockerfiles/starburst-enterprise-paygo" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
+
+    # Push Docker image to ECR
+    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest"
+fi
+
+cd "${CURRENT_DIR}"
+
+exit 0
+
+######################################
+# Build starburst-trino-scaler image
+#####################################
+print_with_header "Build starburst-trino-scaler image"
+
+ecr_repository_name="dliab-starburst-trino-scaler"
+
+# Check if the ECR repository exists
+if aws ecr describe-repositories --repository-names "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}" &> /dev/null; then
+    echo "ECR repository '$ecr_repository_name' exists in region '${AWS_DEFAULT_REGION}'."
+else
+    echo "ECR repository '$ecr_repository_name' does not exist in region '${AWS_DEFAULT_REGION}'."
+    # Create the ECR repository
+    aws ecr create-repository --repository-name "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}"
+
+    # Output success message
+    echo "ECR repository '$ecr_repository_name' created in region '${AWS_DEFAULT_REGION}'."
+fi
+cd "${CURRENT_DIR}"
+
+# Check if Docker image with the specified tag exists
+if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
+    echo "Docker image "${ecr_repository_name}:latest" exists locally."
+else
+
+    directory="${CURRENT_DIR}/dockerfiles/starburst-trino-scaler"
+
+    if [ -d "$directory" ]; then
+        echo "Directory exists."
+    else
+        echo "Directory does not exist."
+        mkdir -p $directory
+    fi
+
+    filename="${CURRENT_DIR}/dockerfiles/starburst-trino-scaler/Dockerfile"
+
+    if [ ! -e "$filename" ]; then
+        # Create the file
+        cat > "$filename" <<EOF
+FROM 709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/keda-trino-scaler-paygo:0.1.15.aws.114.amd64
+
+
+EOF
+
+        echo "File created: $filename"
+    else
+        echo "File already exists: $filename"
+    fi
+
+    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
+
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    cd "dockerfiles/starburst-trino-scaler" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
+
+    # Push Docker image to ECR
+    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest"
+fi
+
+cd "${CURRENT_DIR}"
+
+
+######################################
+# Build starburst-enterprise-init image
+#####################################
+print_with_header "Build starburst-enterprise-init image"
+
+ecr_repository_name="dliab-starburst-enterprise-init"
+
+# Check if the ECR repository exists
+if aws ecr describe-repositories --repository-names "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}" &> /dev/null; then
+    echo "ECR repository '$ecr_repository_name' exists in region '${AWS_DEFAULT_REGION}'."
+else
+    echo "ECR repository '$ecr_repository_name' does not exist in region '${AWS_DEFAULT_REGION}'."
+    # Create the ECR repository
+    aws ecr create-repository --repository-name "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}"
+
+    # Output success message
+    echo "ECR repository '$ecr_repository_name' created in region '${AWS_DEFAULT_REGION}'."
+fi
+cd "${CURRENT_DIR}"
+
+# Check if Docker image with the specified tag exists
+if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
+    echo "Docker image "${ecr_repository_name}:latest" exists locally."
+else
+
+    directory="${CURRENT_DIR}/dockerfiles/starburst-enterprise-init"
+
+    if [ -d "$directory" ]; then
+        echo "Directory exists."
+    else
+        echo "Directory does not exist."
+        mkdir -p $directory
+    fi
+
+    filename="${CURRENT_DIR}/dockerfiles/starburst-enterprise-init/Dockerfile"
+
+    if [ ! -e "$filename" ]; then
+        # Create the file
+        cat > "$filename" <<EOF
+FROM 709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/starburst-enterprise-init-paygo:1.5.6.aws.114.amd64
+
+
+EOF
+
+        echo "File created: $filename"
+    else
+        echo "File already exists: $filename"
+    fi
+
+    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
+
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    cd "dockerfiles/starburst-enterprise-init" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
+
+    # Push Docker image to ECR
+    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest"
+fi
+
+cd "${CURRENT_DIR}"
+
+
+######################################
+# Build starburst-enterprise-licence-verifier image
+#####################################
+print_with_header "Build starburst-enterprise-licence-verifier image"
+
+ecr_repository_name="dliab-starburst-enterprise-licence-verifier"
+
+# Check if the ECR repository exists
+if aws ecr describe-repositories --repository-names "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}" &> /dev/null; then
+    echo "ECR repository '$ecr_repository_name' exists in region '${AWS_DEFAULT_REGION}'."
+else
+    echo "ECR repository '$ecr_repository_name' does not exist in region '${AWS_DEFAULT_REGION}'."
+    # Create the ECR repository
+    aws ecr create-repository --repository-name "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}"
+
+    # Output success message
+    echo "ECR repository '$ecr_repository_name' created in region '${AWS_DEFAULT_REGION}'."
+fi
+cd "${CURRENT_DIR}"
+
+# Check if Docker image with the specified tag exists
+if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
+    echo "Docker image "${ecr_repository_name}:latest" exists locally."
+else
+
+    directory="${CURRENT_DIR}/dockerfiles/starburst-enterprise-licence-verifier"
+
+    if [ -d "$directory" ]; then
+        echo "Directory exists."
+    else
+        echo "Directory does not exist."
+        mkdir -p $directory
+    fi
+
+    filename="${CURRENT_DIR}/dockerfiles/starburst-enterprise-licence-verifier/Dockerfile"
+
+    if [ ! -e "$filename" ]; then
+        # Create the file
+        cat > "$filename" <<EOF
+FROM 709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/starburst-license-verifier-paygo:429.1.0.aws.114.amd64
+
+
+EOF
+
+        echo "File created: $filename"
+    else
+        echo "File already exists: $filename"
+    fi
+
+    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
+
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    cd "dockerfiles/starburst-enterprise-licence-verifier" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
+
+    # Push Docker image to ECR
+    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest"
+fi
+
+cd "${CURRENT_DIR}"
+
+
+
+
+
+######################################
+# Build starburst-ranger-admin image
+#####################################
+print_with_header "Build starburst-ranger-admin image"
+
+ecr_repository_name="dliab-starburst-ranger-admin"
+
+# Check if the ECR repository exists
+if aws ecr describe-repositories --repository-names "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}" &> /dev/null; then
+    echo "ECR repository '$ecr_repository_name' exists in region '${AWS_DEFAULT_REGION}'."
+else
+    echo "ECR repository '$ecr_repository_name' does not exist in region '${AWS_DEFAULT_REGION}'."
+    # Create the ECR repository
+    aws ecr create-repository --repository-name "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}"
+
+    # Output success message
+    echo "ECR repository '$ecr_repository_name' created in region '${AWS_DEFAULT_REGION}'."
+fi
+cd "${CURRENT_DIR}"
+
+# Check if Docker image with the specified tag exists
+if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
+    echo "Docker image "${ecr_repository_name}:latest" exists locally."
+else
+
+    directory="${CURRENT_DIR}/dockerfiles/starburst-ranger-admin"
+
+    if [ -d "$directory" ]; then
+        echo "Directory exists."
+    else
+        echo "Directory does not exist."
+        mkdir -p $directory
+    fi
+
+    filename="${CURRENT_DIR}/dockerfiles/starburst-ranger-admin/Dockerfile"
+
+    if [ ! -e "$filename" ]; then
+        # Create the file
+        cat > "$filename" <<EOF
+FROM 888508661428.dkr.ecr.us-east-2.amazonaws.com/starburst-ranger-admin:2.4.0-e.2
+
+
+EOF
+
+        echo "File created: $filename"
+    else
+        echo "File already exists: $filename"
+    fi
+
+    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
+
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    cd "dockerfiles/starburst-ranger-admin" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
+
+    # Push Docker image to ECR
+    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest"
+fi
+
+cd "${CURRENT_DIR}"
+
+
+
+
+######################################
+# Build starburst-ranger-usersync image
+#####################################
+print_with_header "Build starburst-ranger-usersync image"
+
+ecr_repository_name="dliab-starburst-ranger-usersync"
+
+# Check if the ECR repository exists
+if aws ecr describe-repositories --repository-names "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}" &> /dev/null; then
+    echo "ECR repository '$ecr_repository_name' exists in region '${AWS_DEFAULT_REGION}'."
+else
+    echo "ECR repository '$ecr_repository_name' does not exist in region '${AWS_DEFAULT_REGION}'."
+    # Create the ECR repository
+    aws ecr create-repository --repository-name "$ecr_repository_name" --region "${AWS_DEFAULT_REGION}"
+
+    # Output success message
+    echo "ECR repository '$ecr_repository_name' created in region '${AWS_DEFAULT_REGION}'."
+fi
+cd "${CURRENT_DIR}"
+
+# Check if Docker image with the specified tag exists
+if docker images "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" | grep -q "latest"; then
+    echo "Docker image "${ecr_repository_name}:latest" exists locally."
+else
+
+    directory="${CURRENT_DIR}/dockerfiles/starburst-ranger-usersync"
+
+    if [ -d "$directory" ]; then
+        echo "Directory exists."
+    else
+        echo "Directory does not exist."
+        mkdir -p $directory
+    fi
+
+    filename="${CURRENT_DIR}/dockerfiles/starburst-ranger-usersync/Dockerfile"
+
+    if [ ! -e "$filename" ]; then
+        # Create the file
+        cat > "$filename" <<EOF
+FROM 888508661428.dkr.ecr.us-east-2.amazonaws.com/ranger-usersync:2.4.0-e.2
+
+
+EOF
+
+        echo "File created: $filename"
+    else
+        echo "File already exists: $filename"
+    fi
+
+    aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}"
+
+    echo "Docker image "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}" does not exist locally."
+    cd "dockerfiles/starburst-ranger-usersync" && docker build -t "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest" . && cd "${CURRENT_DIR}"
+
+    # Push Docker image to ECR
+    docker push "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ecr_repository_name}:latest"
+fi
+
+cd "${CURRENT_DIR}"
+
 ######################################
 # Done building docker images
 #####################################
@@ -1292,7 +2209,8 @@ else
   node_group_min_size=1
   node_group_max_size=4
   node_group_desired_capacity=4
-  node_instance_type="t3.medium"
+  node_instance_type="t3.xlarge"
+  #node_instance_type="t3.medium"
   key_pair_name="${KEYPAIR_NAME}"  # Replace with your EC2 Key Pair name
 
   # Create EKS Cluster
@@ -1306,7 +2224,7 @@ else
     --node-type "$node_instance_type" \
     --node-volume-size 50 \
     --ssh-access \
-    --ssh-public-key "$key_pair_name" \
+    --ssh-public-key "dliab" \
     --version "${EKS_VERSION}" \
     --managed \
     --asg-access
@@ -1361,6 +2279,28 @@ else
 
 fi
 
+# Associate an IAM OIDC provider for your cluster
+eksctl utils associate-iam-oidc-provider \
+     --region  "${AWS_DEFAULT_REGION}" \
+     --cluster "${CLUSTER_NAME}" \
+     --approve
+
+
+# Create Starburst service account
+eksctl create iamserviceaccount \
+    --name starburst-enterprise-sa \
+    --namespace default \
+    --cluster "${CLUSTER_NAME}"  \
+    --attach-policy-arn arn:aws:iam::aws:policy/AWSMarketplaceMeteringFullAccess \
+    --attach-policy-arn arn:aws:iam::aws:policy/AWSMarketplaceMeteringRegisterUsage \
+    --attach-policy-arn arn:aws:iam::aws:policy/service-role/AWSLicenseManagerConsumptionPolicy \
+    --approve \
+    --override-existing-serviceaccounts \
+
+
+
+
+
 #########################################
 #########################################
 # Install all helm charts
@@ -1414,8 +2354,12 @@ if [ "$name_found" == true ]; then
 else
   echo "$target_name is not in the array."
   helm install dliab-secrets-chart charts/dliab-secrets \
+  --set openldap_tls_cert="$(cat ./ca.crt)" \
+
   --values charts/dliab-secrets/values.yaml
 fi
+
+
 
 ###############################
 # Install Openldap chart
@@ -1457,6 +2401,8 @@ else
   --set persistence.enabled=false \
   --set replication.enabled=false \
   --set env.LDAP_ENABLE_MEMBERS="yes" \
+  --set tls.secretName.secretName="openldap_tls_cert" \
+  --set tls.hosts[0]="example.com" \
   --values charts/openldap/values.yaml
 
   #OpenLDAP-Stack-HA has been installed. You can access the server from within the k8s cluster using:
@@ -1511,13 +2457,15 @@ else
   echo "$target_name is not in the array."
   helm dependencies build charts/bitnami-charts/bitnami/postgresql/
 
-
   helm install postgres-chart \
+  --set global.postgresql.auth.postgresPassword="postgres" \
   --set global.imageRegistry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com" \
   --set image.registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com" \
   --set image.repository=dliab-postgres \
   --set image.tag=latest \
   charts/bitnami-charts/bitnami/postgresql/ --values charts/bitnami-charts/bitnami/postgresql/values.yaml
+
+
 
   #PostgreSQL can be accessed via port 5432 on the following DNS names from within your cluster:
   #    postgres-chart-postgresql.default.svc.cluster.local - Read/Write connection
@@ -1565,10 +2513,12 @@ else
   kubectl port-forward service/postgres-chart-postgresql 5432:5432 &
   sleep 3
   POSTGRES_ADMIN_PASSWORD=$(kubectl get secret --namespace default postgres-chart-postgresql -o jsonpath="{.data.postgres-password}" | base64 -d)
-  PGPASSWORD="$POSTGRES_ADMIN_PASSWORD" psql --host 127.0.0.1 -U postgres -d postgres -p 5432 -a -f "${CURRENT_DIR}/scripts/postgres_setup.sql"
-  echo "Done configuring airflow database"
+  PGPASSWORD="${POSTGRES_ADMIN_PASSWORD}" psql --host 127.0.0.1 -U postgres -d postgres -p 5432 -a -f "${CURRENT_DIR}/scripts/postgres_setup.sql"
+  echo "Done configuring database"
 
 fi
+
+
 
 ########################
 # Install Redis chart
@@ -1753,6 +2703,7 @@ EOF
 
 fi
 
+
 #############################
 # Install OpenSearch
 #############################
@@ -1841,7 +2792,7 @@ EOF
   --set openmetadata.config.database.port=5432 \
   --set openmetadata.config.database.driverClass="org.postgresql.Driver" \
   --set openmetadata.config.database.auth.username="openmetadata_user" \
-  --set openmetadata.config.database.auth.password.secretRef="postgres-secrets" \
+  --set openmetadata.config.database.auth.password.secretRef="openmetadata-secrets" \
   --set openmetadata.config.database.auth.password.secretKey="password" \
   --set openmetadata.config.pipelineServiceClientConfig.apiEndpoint="http://airflow-chart-web.default.cluster.local:8080" \
   --set openmetadata.config.pipelineServiceClientConfig.auth.password.secretRef="airflow-secrets" \
@@ -1854,12 +2805,13 @@ EOF
 
 fi
 
-################################
-# Install Trino
-################################
+
+############################
+# Install starburst chart
+############################
 
 # Target name to check
-target_name="trino"
+target_name="starburst-enterprise-chart"
 
 # Flag to indicate if the name is found
 name_found=false
@@ -1877,13 +2829,91 @@ if [ "$name_found" == true ]; then
   echo "$target_name is in the array."
 else
   echo "$target_name is not in the array."
-  helm dependencies build charts/trino/charts/trino
-  helm install trino charts/trino/charts/trino \
-  --set image.repository="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/openlake-trino" \
-  --set image.tag=latest \
-  --values charts/trino/charts/trino/values.yaml
+
+  helm install starburst-enterprise-chart charts/starburst-enterprise/ \
+  --set image.repository="409396177599.dkr.ecr.us-east-1.amazonaws.com/dliab-starburst-enterprise-paygo" \
+  --set image.tag="latest" \
+  --set initImage.repository="409396177599.dkr.ecr.us-east-1.amazonaws.com/dliab-starburst-enterprise-init" \
+  --set initImage.tag="latest" \
+  --set worker.kedaScaler.image.repository="409396177599.dkr.ecr.us-east-1.amazonaws.com/dliab-starburst-trino-scaler" \
+  --set worker.kedaScaler.image.tag="latest" \
+  --set serviceAccountName="starburst-enterprise-sa" \
+  --set coordinator.resources.memory="4Gi" \
+  --set coordinator.resources.cpu="1" \
+  --set worker.replicase="1" \
+  --set worker.resources.memory="4Gi" \
+  --set worker.resources.cpu="1" \
+  --values charts/starburst-enterprise/additional-values.yaml \
+  --values charts/starburst-enterprise/values.yaml
+
+
+  #--set coordinator.etcFiles.group-provider.name="ldap" \
+  #--set coordinator.etcFiles.group-provider.properties.ldap.ssl="false" \
+  #--set coordinator.etcFiles.group-provider.properties.ldap.user="cn=admin,dc=sirius,dc=com" \
+  #--set coordinator.etcFiles.group-provider.properties.ldap.password="passw0rd" \
+  #--set coordinator.etcFiles.group-provider.properties.ldap.url="ldap://openldap-chart.default.svc.cluster.local:389" \
+  #--set coordinator.etcFiles.group-provider.properties.ldap.group.search-filter="(objectClass=groupOfNames)" \
+  #--set coordinator.etcFiles.group-provider.properties.ldap.group.member-attribute="member" \
+  #--set coordinator.etcFiles.group-provider.properties.ldap.group.name-attribute="cn" \
+  #--set coordinator.etcFiles.group-provider.properties.ldap.user.member-of-attribute="memberOf" \
+  #--set coordinator.etcFiles.group-provider.properties.ldap.user.search-filter="(&(objectClass=inetOrgPerson)(uid=0))" \
+  #--set coordinator.etcFiles.group-provider.properties.ldap.cache.ttl="10s" \
+
+  #--set coordinator.etcFiles.properties.password-authenticator.name="ldap" \
+	#--set coordinator.etcFiles.properties.ldap.url="ldap://openldap-chart.default.svc.cluster.local:389" \
+	#--set coordinator.etcFiles.properties.ldap.user-bind-pattern=uid="\${USER},ou=users,dc=sirius,dc=com" \
+
+
+  #   --set imagePullSecrets[0].name="awsmp-registry-pull-secret" \
 
 fi
+
+exit 1
+
+###############################
+# Install Ranger chart
+###############################
+
+
+
+
+
+###############################
+# Install Ranger chart
+###############################
+
+# Target name to check
+target_name="ranger-chart"
+
+# Flag to indicate if the name is found
+name_found=false
+
+# Iterate through the array
+for name in "${helm_array[@]}"; do
+    if [ "$name" == "$target_name" ]; then
+        name_found=true
+        break
+    fi
+done
+
+# Check the result
+if [ "$name_found" == true ]; then
+  echo "$target_name is in the array."
+else
+  echo "$target_name is not in the array."
+
+  helm install ranger-chart charts/starburst-ranger/charts/ \
+  --set admin.image.repository="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin" \
+  --set admin.image.tag="latest" \
+  --set usersync.image.repository="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-usersync" \
+  --set usersync.image.tag="latest" \
+  --values charts/starburst-ranger/charts/values.yaml
+
+
+
+
+fi
+
 
 ########################
 # Forwarding all ports
@@ -1894,5 +2924,9 @@ kubectl port-forward --namespace default svc/openmetadata 8585:8585 &
 kubectl port-forward --namespace default svc/airflow-chart-web 8080:8080 &
 kubectl port-forward services/openldap-chart-phpldapadmin 8081:80 &
 kubectl port-forward service/postgres-chart-postgresql 5432:5432 &
-kubectl port-forward service/trino 8082:8080 &
+kubectl port-forward service/starburst 8083:8080 &
+
+#kubectl port-forward service/trino 8082:8080 &
+
+
 
