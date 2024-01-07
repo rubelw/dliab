@@ -10,7 +10,7 @@ CLUSTER_NAME="dliab-eks-cluster"
 JDK_DOWNLOAD_LINK="https://corretto.aws/downloads/latest/amazon-corretto-21-x64-linux-jdk.tar.gz"
 JDK_VERSION=21
 PUBLIC_KEY_FILE="${HOME}/.ssh/dliab.pub"
-KEY_NAME="dliab"
+KEY_NAME="id_rsa"
 
 
 while getopts ":d" opt; do
@@ -495,6 +495,9 @@ cd "${CURRENT_DIR}"
 
 
 
+
+
+
 print_with_header "Checking if git is installed"
 if command -v git &> /dev/null ; then
     echo "Git is installed"
@@ -670,26 +673,14 @@ output_file="${CURRENT_DIR}/charts/starburst-enterprise/additional-values.yaml"
 cat <<EOF > "$output_file"
 coordinator:
   etcFiles:
-    group-provider:
-      properties:
-        group-provider.properties: |
-          group-provider.name=ldap-ad
-          ldap.url=ldap://openldap-chart.default.svc.cluster.local:389
-          ldap.allow-insecure=true
-          ldap.admin-password=passw0rd
-          ldap.user-base-dn=dc=sirius,dc=com
-          ldap.user-search-filter=(&(objectClass=user)(sAMAccountName={USER}))
-          ldap.group-filter=All
-          ldap.cache-ttl=1h
-          ldap.max-retry-count=5
-          ldap.retry-interval=2s
-        password-authenticator.properties: |
-          password-authenticator.name=ldap
-          ldap.allow-insecure=true
-          ldap.url=ldap://openldap-chart.default.svc.cluster.local:389
-          ldap.user-bind-pattern=${USER}@sirius.com
-          ldap.user-base-dn=ou=users,dc=sirius,dc=com
-          ldap.group-auth-pattern=(&(objectClass=user)(sAMAccountName=${USER})(|memberOf=CN=admin)))
+    properties:
+      password-authenticator.properties: |
+        password-authenticator.name=ldap
+        ldap.allow-insecure=true
+        ldap.url=ldap://openldap-chart.default.svc.cluster.local:389
+        ldap.user-bind-pattern=rubelw@sirius.com
+        ldap.user-base-dn=ou=users,dc=sirius,dc=com
+        ldap.group-auth-pattern=(&(objectClass=user)(sAMAccountName=rubelw)(|memberOf=CN=admin)))
 
 EOF
 
@@ -881,22 +872,6 @@ if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
   mkdir -p "${CURRENT_DIR}/dockerfiles/${directory}"
   git clone https://github.com/samisalkosuo/openldap-docker.git "${CURRENT_DIR}/dockerfiles/${directory}"
   cd "dockerfiles/${directory}"
-
-  cd "${CURRENT_DIR}"
-else
-  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
-fi
-
-
-print_with_header "Clone ranger-admin dockerfiles"
-directory="ranger-admin"
-
-if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
-  echo "${directory} does not exist"
-  mkdir -p "${CURRENT_DIR}/dockerfiles/${directory}"
-  git clone https://github.com/aakashnand.trino-ranger-demo.git" ${CURRENT_DIR}/dockerfiles/${directory}"
-  cd "dockerfiles/${directory}"
-  rm -rf .git
 
   cd "${CURRENT_DIR}"
 else
@@ -1720,7 +1695,7 @@ else
     # Create the file
     mkdir -p "${CURRENT_DIR}/dockerfiles/starburst-enterprise-paygo/plugins"
     echo "Copying jar files"
-    cp -f "${CURRENT_DIR}/plugins/group-provider/target"/*.jar "${CURRENT_DIR}/dockerfiles/starburst-enterprise-paygo/plugins"
+    cp -f "${CURRENT_DIR}/plugins/group-provider/target/trino-group-provider-ldap-ad-1.0"/*.jar "${CURRENT_DIR}/dockerfiles/starburst-enterprise-paygo/plugins"
 
     cat > "$filename" <<EOF
 FROM 709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/starburst-enterprise-paygo:429-e.1.aws.114.amd64
@@ -2146,8 +2121,8 @@ else
     cat > "$filename" <<EOF
 FROM 709825985650.dkr.ecr.us-east-1.amazonaws.com/starburst/starburst-enterprise-paygo:429-e.1.aws.114.amd64
 
-RUN mkdir -p /usr/lib/starburst/plugin/ldap-ad
-COPY plugins/*.jar  /usr/lib/starburst/plugin/ldap-ad
+#RUN mkdir -p /usr/lib/starburst/plugin/ldap-ad
+#COPY plugins/*.jar  /usr/lib/starburst/plugin/ldap-ad
 
 
 EOF
@@ -2586,29 +2561,26 @@ else
   echo "#################################"
   python scripts/modify_configmap.py "${AWS_ACCOUNT_ID}"
 
+
+  # Associate an IAM OIDC provider for your cluster
+  eksctl utils associate-iam-oidc-provider \
+       --region  "${AWS_DEFAULT_REGION}" \
+       --cluster "${CLUSTER_NAME}" \
+       --approve
+
+
+  # Create Starburst service account
+  eksctl create iamserviceaccount \
+      --name starburst-enterprise-sa \
+      --namespace default \
+      --cluster "${CLUSTER_NAME}"  \
+      --attach-policy-arn arn:aws:iam::aws:policy/AWSMarketplaceMeteringFullAccess \
+      --attach-policy-arn arn:aws:iam::aws:policy/AWSMarketplaceMeteringRegisterUsage \
+      --attach-policy-arn arn:aws:iam::aws:policy/service-role/AWSLicenseManagerConsumptionPolicy \
+      --approve \
+      --override-existing-serviceaccounts
+
 fi
-
-# Associate an IAM OIDC provider for your cluster
-eksctl utils associate-iam-oidc-provider \
-     --region  "${AWS_DEFAULT_REGION}" \
-     --cluster "${CLUSTER_NAME}" \
-     --approve
-
-
-# Create Starburst service account
-eksctl create iamserviceaccount \
-    --name starburst-enterprise-sa \
-    --namespace default \
-    --cluster "${CLUSTER_NAME}"  \
-    --attach-policy-arn arn:aws:iam::aws:policy/AWSMarketplaceMeteringFullAccess \
-    --attach-policy-arn arn:aws:iam::aws:policy/AWSMarketplaceMeteringRegisterUsage \
-    --attach-policy-arn arn:aws:iam::aws:policy/service-role/AWSLicenseManagerConsumptionPolicy \
-    --approve \
-    --override-existing-serviceaccounts \
-
-
-
-
 
 #########################################
 #########################################
