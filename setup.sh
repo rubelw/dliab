@@ -230,8 +230,8 @@ M2=$M2_HOME/bin
 #####################
 
 if [ -z "$JAVA_HOME" ]; then
-  print_with_header "Must set JAVA_HOME environmental variable"
-  exit 1
+  export JAVA_HOME=$(readlink -f $(which java))
+  echo "JAVA_HOME set to ${JAVA_HOME}"
 fi
 
 #######################
@@ -685,28 +685,6 @@ coordinator:
 EOF
 
 
-print_with_header "Install starburst-ranger"
-directory="starburst-ranger"
-
-if [ ! -d "${CURRENT_DIR}/charts/${directory}" ]; then
-
-  export HELM_EXPERIMENTAL_OCI=1
-  aws ecr get-login-password \
-      --region us-east-1 | helm registry login \
-      --username AWS \
-      --password-stdin 888508661428.dkr.ecr.us-east-2.amazonaws.com
-
-  cd "${CURRENT_DIR}/charts/"
-  helm pull oci://888508661428.dkr.ecr.us-east-2.amazonaws.com/starburst-ranger-helm-chart  --version 429.1.0
-
-  tar -zxvf starburst-ranger-helm-chart-429.1.0.tgz
-  rm  starburst-ranger-helm-chart-429.1.0.tgz
-
-  cd "${CURRENT_DIR}"
-else
-  echo "Directory '$directory' already exists. Skipping git clone.- ${LINENO}"
-fi
-
 
 print_with_header "Install airflow charts"
 directory="airflow"
@@ -849,7 +827,7 @@ fi
 ####################################
 
 
-print_with_header "Clone binami containers"
+print_with_header "Clone bitnami containers"
 directory="bitnami"
 
 if [ ! -d "${CURRENT_DIR}/dockerfiles/${directory}" ]; then
@@ -3129,89 +3107,6 @@ else
   --set worker.resources.cpu="1" \
   --values charts/starburst-enterprise/values.yaml \
   --values charts/starburst-enterprise/additional-values.yaml
-
-fi
-
-
-
-
-
-###############################
-# Install Ranger chart
-###############################
-
-# Target name to check
-target_name="ranger-chart"
-
-# Flag to indicate if the name is found
-name_found=false
-
-# Iterate through the array
-for name in "${helm_array[@]}"; do
-    if [ "$name" == "$target_name" ]; then
-        name_found=true
-        break
-    fi
-done
-
-# Check the result
-if [ "$name_found" == true ]; then
-  echo "$target_name is in the array."
-else
-  echo "$target_name is not in the array."
-
-  helm install ranger-chart charts/starburst-ranger/charts/ \
-  --set admin.image.repository="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin" \
-  --set admin.image.tag="latest" \
-  --set usersync.image.repository="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-usersync" \
-  --set usersync.image.tag="latest" \
-  --values charts/starburst-ranger/charts/values.yaml
-
-
-fi
-
-
-###############################
-# Install Ranger chart
-###############################
-
-
-
-
-
-###############################
-# Install Ranger chart
-###############################
-
-# Target name to check
-target_name="ranger-chart"
-
-# Flag to indicate if the name is found
-name_found=false
-
-# Iterate through the array
-for name in "${helm_array[@]}"; do
-    if [ "$name" == "$target_name" ]; then
-        name_found=true
-        break
-    fi
-done
-
-# Check the result
-if [ "$name_found" == true ]; then
-  echo "$target_name is in the array."
-else
-  echo "$target_name is not in the array."
-
-  helm install ranger-chart charts/starburst-ranger/charts/ \
-  --set admin.image.repository="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-admin" \
-  --set admin.image.tag="latest" \
-  --set usersync.image.repository="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dliab-ranger-usersync" \
-  --set usersync.image.tag="latest" \
-  --values charts/starburst-ranger/charts/values.yaml
-
-
-
 
 fi
 
